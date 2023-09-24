@@ -47,6 +47,10 @@
 
 #define BITS_PER_SAMPLE 5
 #define SAMPLES_PER_PIXEL 2
+#define COLOR_MASK (((1 << BITS_PER_SAMPLE) << 1) - 1)
+#define PIXEL_FB_TO_RFB(p, r_offset, g_offset, b_offset) \
+    ((p >> r_offset) & COLOR_MASK) | (((p >> g_offset) & COLOR_MASK) << BITS_PER_SAMPLE) | (((p >> b_offset) & COLOR_MASK) << (2 * BITS_PER_SAMPLE))
+    
 
 // #define CHANNELS_PER_PIXEL 4
 
@@ -294,9 +298,6 @@ int timeToLogFPS()
 
 /*****************************************************************************/
 //#define COLOR_MASK  0x1f001f
-#define COLOR_MASK (((1 << BITS_PER_SAMPLE) << 1) - 1)
-#define PIXEL_FB_TO_RFB(p, r_offset, g_offset, b_offset) \
-    ((p >> r_offset) & COLOR_MASK) | (((p >> g_offset) & COLOR_MASK) << BITS_PER_SAMPLE) | (((p >> b_offset) & COLOR_MASK) << (2 * BITS_PER_SAMPLE))
 
 static void update_screen(void)
 {
@@ -316,7 +317,7 @@ static void update_screen(void)
 
     varblock.min_i = varblock.min_j = 9999;
     varblock.max_i = varblock.max_j = -1;
-
+    
     if (vnc_rotate == 0 && bits_per_pixel == 24)
     {
         uint8_t *f = (uint8_t *)fbmmap; /* -> framebuffer         */
@@ -569,6 +570,42 @@ static void update_screen(void)
             }
         }
     }
+    else if (bits_per_pixel == 32)
+    {
+        uint32_t *f = (uint32_t *)fbmmap;
+        uint32_t *c = (uint32_t *)fbbuf;
+        uint32_t *r = (uint32_t *)vncbuf;
+
+        const int width = (vnc_rotate == 0 || vnc_rotate == 180) ? fb_xres : fb_yres;
+        const int height = (vnc_rotate == 0 || vnc_rotate == 180) ? fb_yres : fb_xres;
+        
+        for (int y = 0; y < fb_yres; ++y) {
+            for (int x = 0; x < fb_xres; ++x) {
+                uint32_t pixel = *f;
+                if (pixel != *c) {
+                    int x2, y2;
+                    *c = pixel;
+
+                    switch (vnc_rotate) {
+                        case 0:    x2 = x; y2 = y; break;
+                        case 90:   x2 = fb_yres - 1 - y; y2 = x; break;
+                        case 180:  x2 = fb_xres - 1 - x; y2 = fb_yres - 1 - y; break;
+                        case 270:  x2 = y; y2 = fb_xres - 1 - x; break;
+                        default: exit(EXIT_FAILURE);
+                    }
+
+                    r[y2 * width + x2] = PIXEL_FB_TO_RFB(pixel, varblock.r_offset, varblock.g_offset, varblock.b_offset);
+
+                    if (x2 < varblock.min_i) varblock.min_i = x2;
+                    if (x2 > varblock.max_i) varblock.max_i = x2;
+                    if (y2 < varblock.min_j) varblock.min_j = y2;
+                    if (y2 > varblock.max_j) varblock.max_j = y2;
+                }
+                f++;
+                c++;
+            }
+        }
+    }
     else
     {
         error_print("not supported color depth or rotation\n");
@@ -712,7 +749,8 @@ int main(int argc, char **argv)
     {
         info_print("No touch or mouse device\n");
     }
-
+    
+    info_print("rotate value: %i, bpp value: %ui \n", (int)vnc_rotate, (int)bits_per_pixel);
     info_print("Initializing VNC server:\n");
     info_print("	width:  %d\n", (int)fb_xres);
     info_print("	height: %d\n", (int)fb_yres);
